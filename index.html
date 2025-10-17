@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VarsityNotify - বিশ্ববিদ্যালয় নোটিশ অ্যাপ</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for mobile-first design and aesthetics */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f4f7f9;
+        }
+        #app-container {
+            max-width: 500px;
+            margin: 0 auto;
+            min-height: 100vh;
+            background-color: #ffffff;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.05);
+        }
+        .announcement-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .announcement-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+        .cr-badge {
+            background-color: #ef4444; /* Red for Admin */
+            color: white;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .student-badge {
+            background-color: #22c55e; /* Green for Student */
+        }
+        /* Custom scrollbar for better look */
+        .overflow-y-scroll::-webkit-scrollbar {
+            width: 8px;
+        }
+        .overflow-y-scroll::-webkit-scrollbar-thumb {
+            background-color: #94a3b8;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Main Application Container -->
+    <div id="app-container" class="flex flex-col">
+        <header class="bg-indigo-600 text-white p-4 shadow-lg sticky top-0 z-10">
+            <h1 class="text-xl font-bold">📢 VarsityNotify</h1>
+            <p id="user-info" class="text-sm font-light mt-1 hidden">ব্যবহারকারী: <span id="user-role-display"></span> (<span id="user-id-display"></span>)</p>
+        </header>
+
+        <main id="main-content" class="flex-grow p-4 space-y-4"></main>
+
+        <footer id="footer-menu" class="p-3 border-t bg-gray-50 flex justify-around hidden">
+            <button onclick="App.setScreen('home')" class="p-2 text-indigo-600 focus:outline-none">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l-2 2m-2 0v10a1 1 0 01-1 1h-3m-6 0h6m-6 0h-2a1 1 0 01-1-1v-4m7 0h4a1 1 0 011 1v4m-12 4h12" />
+                </svg>
+                <span class="text-xs">হোম</span>
+            </button>
+            <button id="cr-post-btn" onclick="App.setScreen('create')" class="p-2 text-gray-500 focus:outline-none" style="display:none;">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span class="text-xs">পোস্ট</span>
+            </button>
+            <button onclick="App.logout()" class="p-2 text-gray-500 focus:outline-none">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+                <span class="text-xs">লগআউট</span>
+            </button>
+        </footer>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, deleteDoc, onSnapshot, collection, query, setDoc, getDoc, updateDoc, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Global Variables (Mandatory for Canvas Environment)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let userId = null;
+        let publicAnnouncementsCollection;
+        let userDocRef; // Reference to the user's private role document
+
+        // Central Application Logic
+        class AppManager {
+            constructor() {
+                this.role = null; // 'student' or 'cr'
+                this.screen = 'loading'; // 'loading', 'login', 'home', 'create'
+                this.announcements = [];
+                this.announcementListener = null;
+
+                // Bind methods
+                this.setScreen = this.setScreen.bind(this);
+                this.logout = this.logout.bind(this);
+            }
+
+            async initializeFirebaseAndAuth() {
+                try {
+                    setLogLevel('debug'); // Enable Firestore logging
+                    const app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    
+                    // Set collection paths
+                    publicAnnouncementsCollection = collection(db, `artifacts/${appId}/public/data/announcements`);
+
+                    onAuthStateChanged(auth, async (user) => {
+                        if (user) {
+                            userId = user.uid;
+                            userDocRef = doc(db, `artifacts/${appId}/users/${userId}/profile`, 'role');
+
+                            // Try to fetch existing role
+                            const roleSnap = await getDoc(userDocRef);
+                            if (roleSnap.exists()) {
+                                this.role = roleSnap.data().role;
+                                console.log('Existing role found:', this.role);
+                                this.setScreen('home');
+                            } else {
+                                console.log('No role found, navigating to login.');
+                                this.setScreen('login');
+                            }
+                        } else {
+                            // Initial sign in or user logged out
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        }
+                    });
+
+                } catch (error) {
+                    console.error("Firebase Initialization or Auth Error:", error);
+                    this.setScreen('error');
+                    this.renderError(`Firebase ত্রুটি: ${error.message}.`);
+                }
+            }
+
+            // Public method to navigate screens
+            setScreen(newScreen) {
+                if (newScreen === 'home' && this.role) {
+                    this.listenToAnnouncements(); // Start listening when going to home
+                }
+                this.screen = newScreen;
+                this.renderApp();
+            }
+
+            // --- Authentication and Role Handling ---
+
+            async handleRoleSelection(selectedRole) {
+                if (!userId) {
+                    this.renderModal('ত্রুটি', 'ব্যবহারকারীর আইডি পাওয়া যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।');
+                    return;
+                }
+                this.role = selectedRole;
+                try {
+                    // Save the role to Firestore
+                    await setDoc(userDocRef, { role: this.role, joined_at: serverTimestamp(), userId: userId });
+                    console.log(`Role '${this.role}' saved successfully.`);
+                    this.setScreen('home');
+                } catch (e) {
+                    console.error("Error setting role:", e);
+                    this.renderModal('ত্রুটি', `রোল সেট করা যায়নি: ${e.message}`);
+                }
+            }
+
+            async logout() {
+                try {
+                    await signOut(auth);
+                    this.role = null;
+                    this.announcements = [];
+                    if (this.announcementListener) {
+                        this.announcementListener(); // Unsubscribe from announcements
+                        this.announcementListener = null;
+                    }
+                    this.setScreen('login');
+                    this.renderModal('সফল', 'আপনি সফলভাবে লগআউট করেছেন।');
+                } catch (e) {
+                    console.error("Error logging out:", e);
+                    this.renderModal('ত্রুটি', `লগআউট ত্রুটি: ${e.message}`);
+                }
+            }
+
+            // --- Firestore CRUD for Announcements ---
+
+            listenToAnnouncements() {
+                if (this.announcementListener) {
+                    this.announcementListener(); // Unsubscribe from previous listener
+                }
+
+                const q = query(publicAnnouncementsCollection);
+
+                this.announcementListener = onSnapshot(q, (snapshot) => {
+                    this.announcements = [];
+                    snapshot.forEach((doc) => {
+                        const data = doc.data();
+                        this.announcements.push({
+                            id: doc.id,
+                            ...data,
+                            // Ensure timestamp is a JS Date object
+                            created_at: data.created_at ? data.created_at.toDate() : new Date(),
+                        });
+                    });
+                    // Sort by newest first
+                    this.announcements.sort((a, b) => b.created_at - a.created_at);
+                    
+                    // Trigger a re-render only if the current screen is 'home'
+                    if (this.screen === 'home') {
+                        this.renderApp();
+                    }
+                    console.log("Announcements updated:", this.announcements.length);
+                }, (error) => {
+                    console.error("Error listening to announcements:", error);
+                    this.renderModal('ত্রুটি', `নোটিশ লোড করতে সমস্যা হচ্ছে: ${error.message}`);
+                });
+            }
+
+            async handlePostAnnouncement(title, description, category, priority) {
+                if (!this.role || this.role !== 'cr') {
+                    this.renderModal('অনুমতি নেই', 'শুধুমাত্র CR/ACR নোটিশ পোস্ট করতে পারে।');
+                    return;
+                }
+                if (!title || !description || !category) {
+                    this.renderModal('ত্রুটি', 'দয়া করে সব ফিল্ড পূরণ করুন।');
+                    return;
+                }
+
+                try {
+                    await addDoc(publicAnnouncementsCollection, {
+                        title: title,
+                        description: description,
+                        category: category,
+                        priority: priority,
+                        created_by: userId,
+                        role: this.role,
+                        created_at: serverTimestamp(),
+                    });
+                    this.renderModal('সফল', 'নোটিশ সফলভাবে পোস্ট করা হয়েছে! (শিক্ষার্থীরা রিয়েল-টাইমে পাবে)');
+                    this.setScreen('home'); // Go back to home after posting
+                } catch (e) {
+                    console.error("Error posting announcement:", e);
+                    this.renderModal('ত্রুটি', `নোটিশ পোস্ট করা যায়নি: ${e.message}`);
+                }
+            }
+
+            async handleDeleteAnnouncement(id) {
+                if (this.role !== 'cr') return;
+
+                const confirmed = window.confirm('আপনি কি নিশ্চিত যে এই নোটিশটি মুছে ফেলতে চান?'); // Using standard confirm due to single-file limit
+                if (!confirmed) return;
+
+                try {
+                    await deleteDoc(doc(publicAnnouncementsCollection, id));
+                    this.renderModal('সফল', 'নোটিশ সফলভাবে মুছে ফেলা হয়েছে।');
+                } catch (e) {
+                    console.error("Error deleting announcement:", e);
+                    this.renderModal('ত্রুটি', `নোটিশ মুছে ফেলা যায়নি: ${e.message}`);
+                }
+            }
+
+
+            // --- UI Rendering ---
+
+            renderApp() {
+                const mainContent = document.getElementById('main-content');
+                const footer = document.getElementById('footer-menu');
+                const crPostBtn = document.getElementById('cr-post-btn');
+                const userInfo = document.getElementById('user-info');
+                const userIdDisplay = document.getElementById('user-id-display');
+                const userRoleDisplay = document.getElementById('user-role-display');
+                
+                // Update header/footer based on auth/role state
+                if (this.role) {
+                    userInfo.classList.remove('hidden');
+                    footer.classList.remove('hidden');
+                    userIdDisplay.textContent = userId.substring(0, 8) + '...';
+                    userRoleDisplay.textContent = this.role === 'cr' ? 'CR/ACR' : 'শিক্ষার্থী';
+                    
+                    if (this.role === 'cr') {
+                        crPostBtn.style.display = 'flex';
+                        crPostBtn.classList.replace('text-gray-500', 'text-indigo-600');
+                    } else {
+                        crPostBtn.style.display = 'none';
+                    }
+                } else {
+                    userInfo.classList.add('hidden');
+                    footer.classList.add('hidden');
+                }
+                
+                mainContent.innerHTML = ''; // Clear content
+
+                switch (this.screen) {
+                    case 'loading':
+                        mainContent.innerHTML = this.renderLoading();
+                        break;
+                    case 'login':
+                        mainContent.innerHTML = this.renderLoginScreen();
+                        break;
+                    case 'home':
+                        if (this.role === 'cr') {
+                            mainContent.innerHTML = this.renderAnnouncementFeed('CR/ACR Dashboard');
+                        } else {
+                            mainContent.innerHTML = this.renderAnnouncementFeed('শিক্ষার্থী নোটিশ ফিড');
+                        }
+                        break;
+                    case 'create':
+                        mainContent.innerHTML = this.renderCRPanel();
+                        break;
+                    default:
+                        mainContent.innerHTML = this.renderError('অজানা স্ক্রীন');
+                }
+            }
+            
+            // Reusable Components
+
+            renderLoading() {
+                return `
+                    <div class="text-center p-8">
+                        <svg class="animate-spin h-8 w-8 text-indigo-600 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <p class="mt-4 text-gray-600">অ্যাপ লোড হচ্ছে...</p>
+                    </div>
+                `;
+            }
+
+            renderLoginScreen() {
+                return `
+                    <div class="p-6 bg-white rounded-xl shadow-lg mt-10">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-6 text-center">ভূমিকা নির্বাচন করুন</h2>
+                        <p class="text-gray-600 mb-8 text-center">আপনি কি হিসেবে অ্যাপটি ব্যবহার করতে চান?</p>
+                        <div class="space-y-4">
+                            <button onclick="App.handleRoleSelection('student')" class="w-full py-3 px-4 bg-green-500 text-white font-bold rounded-lg shadow-md hover:bg-green-600 transition duration-150 transform hover:scale-[1.02]">
+                                🎓 শিক্ষার্থী (Student)
+                            </button>
+                            <button onclick="App.handleRoleSelection('cr')" class="w-full py-3 px-4 bg-red-500 text-white font-bold rounded-lg shadow-md hover:bg-red-600 transition duration-150 transform hover:scale-[1.02]">
+                                🧑‍💻 CR / ACR (Admin)
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderCRPanel() {
+                const categories = ['Class', 'Exam', 'Departmental', 'General'];
+                return `
+                    <div class="p-1">
+                        <h2 class="text-xl font-bold text-indigo-600 mb-4">📝 নতুন নোটিশ পোস্ট করুন</h2>
+                        <div class="bg-gray-100 p-4 rounded-xl shadow-inner space-y-4">
+                            <input id="notice-title" type="text" placeholder="নোটিশের শিরোনাম" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition">
+                            <textarea id="notice-description" placeholder="বিস্তারিত লিখুন..." rows="4" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition"></textarea>
+                            
+                            <select id="notice-category" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition bg-white">
+                                <option value="" disabled selected>ক্যাটাগরি নির্বাচন করুন</option>
+                                ${categories.map(cat => `<option value="${cat}">${cat}</option>`).join('')}
+                            </select>
+
+                            <div class="flex items-center space-x-2 p-2 bg-white rounded-lg border border-red-300 shadow-sm">
+                                <input id="notice-priority" type="checkbox" class="h-4 w-4 text-red-600 border-gray-300 rounded focus:ring-red-500">
+                                <label for="notice-priority" class="text-sm font-medium text-red-600">🔥 হাই প্রায়োরিটি (জরুরী)</label>
+                            </div>
+
+                            <button onclick="App.submitAnnouncement()" class="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-lg hover:bg-indigo-700 transition duration-150">
+                                নোটিশ পাবলিশ করুন
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            async submitAnnouncement() {
+                const title = document.getElementById('notice-title').value;
+                const description = document.getElementById('notice-description').value;
+                const category = document.getElementById('notice-category').value;
+                const priority = document.getElementById('notice-priority').checked ? 'high' : 'normal';
+                
+                await this.handlePostAnnouncement(title, description, category, priority);
+            }
+
+            renderAnnouncementFeed(title) {
+                const announcementListHTML = this.announcements.length > 0
+                    ? this.announcements.map(announcement => this.renderAnnouncementCard(announcement)).join('')
+                    : '<p class="text-center text-gray-500 p-8">এখনও কোনো নোটিশ পোস্ট করা হয়নি।</p>';
+
+                return `
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">${title} (${this.announcements.length})</h2>
+                    <div class="space-y-4 pb-20">
+                        ${announcementListHTML}
+                    </div>
+                `;
+            }
+
+            renderAnnouncementCard(announcement) {
+                const isCR = this.role === 'cr';
+                const dateString = new Date(announcement.created_at).toLocaleString('bn-BD', {
+                    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+                });
+                const priorityClass = announcement.priority === 'high' ? 'border-red-500 bg-red-50 shadow-red-100' : 'border-indigo-200 bg-white shadow-gray-100';
+                const priorityTag = announcement.priority === 'high'
+                    ? '<span class="text-red-700 font-bold ml-2">🔥 জরুরী</span>'
+                    : '';
+                const categoryClass = announcement.priority === 'high' ? 'bg-red-200 text-red-800' : 'bg-indigo-100 text-indigo-700';
+                
+                return `
+                    <div class="announcement-card border-l-4 ${priorityClass} p-4 rounded-xl shadow-md">
+                        <div class="flex justify-between items-start mb-2">
+                            <h3 class="text-lg font-semibold text-gray-900">${announcement.title} ${priorityTag}</h3>
+                            <span class="text-xs ${categoryClass} px-3 py-1 rounded-full font-medium">${announcement.category}</span>
+                        </div>
+                        <p class="text-gray-700 mb-3 text-sm">${announcement.description}</p>
+                        <div class="flex justify-between items-center text-xs text-gray-500 border-t pt-2 mt-2">
+                            <span>পোস্ট করেছেন: ${announcement.created_by.substring(0, 8)} (${announcement.role === 'cr' ? 'CR/ACR' : 'Student'})</span>
+                            <span>${dateString}</span>
+                        </div>
+                        ${isCR ? `
+                            <div class="mt-3 flex justify-end">
+                                <button onclick="App.handleDeleteAnnouncement('${announcement.id}')" class="text-xs text-red-500 hover:text-red-700 font-medium p-1 rounded-lg transition duration-150">
+                                    মুছে ফেলুন (CR Only)
+                                </button>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+
+            renderError(message) {
+                return `
+                    <div class="text-center p-8 bg-red-100 border-l-4 border-red-500 rounded-lg">
+                        <h3 class="text-xl font-bold text-red-700">❌ একটি ত্রুটি ঘটেছে</h3>
+                        <p class="mt-2 text-red-600">${message}</p>
+                        <button onclick="App.setScreen('login')" class="mt-4 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition">
+                            আবার চেষ্টা করুন
+                        </button>
+                    </div>
+                `;
+            }
+            
+            // Custom Modal (No alert/confirm)
+            renderModal(title, message) {
+                const existingModal = document.getElementById('custom-modal');
+                if (existingModal) existingModal.remove();
+
+                const modalHTML = `
+                    <div id="custom-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm transform transition-all duration-300 scale-100">
+                            <h3 class="text-lg font-bold ${title === 'ত্রুটি' ? 'text-red-600' : 'text-indigo-600'} mb-3">${title}</h3>
+                            <p class="text-gray-700 text-sm mb-4">${message}</p>
+                            <div class="flex justify-end">
+                                <button onclick="document.getElementById('custom-modal').remove()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
+                                    বন্ধ করুন
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.insertAdjacentHTML('beforeend', modalHTML);
+            }
+        }
+
+        // Global App Instance
+        window.App = new AppManager();
+        
+        // Initialize the app on window load
+        window.onload = () => {
+            window.App.initializeFirebaseAndAuth();
+        };
+
+    </script>
+</body>
+</html>
